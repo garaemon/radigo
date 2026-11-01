@@ -13,6 +13,26 @@ Record the [radiko.jp](http://radiko.jp/) program.
 **Please do not use this project for commercial use. Only for your personal, non-commercial use.**</br>
 **個人での視聴の目的以外で利用しないでください.**
 
+## Differences from upstream
+
+This repository is a fork of [yyoshiki41/radigo](https://github.com/yyoshiki41/radigo).
+radiko changed its timefree playlist API, and upstream does not support the new API yet.
+This fork adds the following changes to make `radigo rec` work again:
+
+- `go.mod` replaces [yyoshiki41/go-radiko](https://github.com/yyoshiki41/go-radiko) with the fork [garaemon/go-radiko](https://github.com/garaemon/go-radiko) through a `replace` directive.
+  Upstream go-radiko has not merged the fix for the new timefree playlist API.
+  The fork adds the APIs that `radigo rec` depends on:
+  - `Client.GetTimeshiftPlaylistInfo` fetches the playlist information, including the actual start and end time of a program.
+  - `TimeshiftPlaylistInfo.ChunkURL` builds the playlist URL for one chunk.
+- `radigo rec` downloads a program in HLS chunks of up to 300 seconds with ffmpeg, and then concatenates the chunks.
+  The new playlist limits the number of segments per request.
+- `radigo rec` uses ffprobe to measure the duration of each chunk and to decide where the next chunk starts.
+  ffprobe is therefore an additional requirement.
+
+The Go module path is still `github.com/yyoshiki41/radigo`.
+Build this fork from source instead of `go install github.com/garaemon/radigo`.
+The Docker images and release binaries linked below come from upstream and do not include these changes.
+
 ## Installation
 
 ### Docker images
@@ -60,6 +80,7 @@ Or release binaries are available on [the releases page](https://github.com/yyos
 #### Requirements
 
 - ffmpeg
+- ffprobe (usually bundled with ffmpeg)
 
 ### Build docker image from source
 
