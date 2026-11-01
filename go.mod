@@ -34,3 +34,5 @@ require (
 	golang.org/x/net v0.0.0-20210614182718-04defd469f4e // indirect
 	golang.org/x/sys v0.0.0-20210423082822-04245dca01da // indirect
 )
+
+replace github.com/yyoshiki41/go-radiko => github.com/garaemon/go-radiko v0.0.0-20261101190015-10218299ef5d
