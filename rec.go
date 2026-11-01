@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,7 +14,6 @@ import (
 	"github.com/mitchellh/cli"
 	"github.com/olekukonko/tablewriter"
 	"github.com/yyoshiki41/go-radiko"
-	"github.com/yyoshiki41/radigo/internal"
 )
 
 type recCommand struct {
@@ -92,6 +93,14 @@ func (c *recCommand) Run(args []string) int {
 		return 1
 	}
 
+	areafree := areaID != "" && areaID != currentAreaID
+	info, err := client.GetTimeshiftPlaylistInfo(ctx, stationID, startTime, areafree)
+	if err != nil {
+		c.ui.Error(fmt.Sprintf(
+			"Failed to get playlist info: %s", err))
+		return 1
+	}
+
 	go func() {
 		pg, err := client.GetProgramByStartTime(ctx, stationID, startTime)
 		if err != nil {
@@ -107,38 +116,26 @@ func (c *recCommand) Run(args []string) int {
 		table.Render()
 	}()
 
-	uri, err := client.TimeshiftPlaylistM3U8(ctx, stationID, startTime)
+	tmpDir, err := output.TempAACDir()
 	if err != nil {
 		c.ui.Error(fmt.Sprintf(
-			"Failed to get playlist.m3u8: %s", err))
+			"Failed to create the temp dir: %s", err))
+		return 1
+	}
+	defer os.RemoveAll(tmpDir)
+
+	chunkFiles, err := downloadTimeshiftChunks(
+		ctx, info, client.AuthToken(), client.AreaID(), tmpDir)
+	if err != nil {
+		c.ui.Error(fmt.Sprintf(
+			"Failed to download chunks: %s", err))
 		return 1
 	}
 
-	chunklist, err := radiko.GetChunklistFromM3U8(uri)
-	if err != nil {
+	concatedFile := filepath.Join(tmpDir, "concated.m4a")
+	if err := ConcatAACFiles(ctx, chunkFiles, tmpDir, concatedFile); err != nil {
 		c.ui.Error(fmt.Sprintf(
-			"Failed to get chunklist: %s", err))
-		return 1
-	}
-
-	aacDir, err := output.TempAACDir()
-	if err != nil {
-		c.ui.Error(fmt.Sprintf(
-			"Failed to create the aac dir: %s", err))
-		return 1
-	}
-	defer os.RemoveAll(aacDir) // clean up
-
-	if err := internal.BulkDownload(chunklist, aacDir); err != nil {
-		c.ui.Error(fmt.Sprintf(
-			"Failed to download aac files: %s", err))
-		return 1
-	}
-
-	concatedFile, err := ConcatAACFilesFromList(ctx, aacDir)
-	if err != nil {
-		c.ui.Error(fmt.Sprintf(
-			"Failed to concat aac files: %s", err))
+			"Failed to concat chunk files: %s", err))
 		return 1
 	}
 
@@ -157,6 +154,83 @@ func (c *recCommand) Run(args []string) int {
 
 	c.ui.Output(fmt.Sprintf("Completed!\n%s", output.AbsPath()))
 	return 0
+}
+
+const maxChunkDurationSec = 300
+
+func downloadTimeshiftChunks(
+	ctx context.Context,
+	info *radiko.TimeshiftPlaylistInfo,
+	authToken, areaID, tmpDir string,
+) ([]string, error) {
+	ftTime, err := time.ParseInLocation(datetimeLayout, info.Ft, location)
+	if err != nil {
+		return nil, err
+	}
+	toTime, err := time.ParseInLocation(datetimeLayout, info.To, location)
+	if err != nil {
+		return nil, err
+	}
+
+	totalSec := int(toTime.Sub(ftTime).Seconds())
+	var chunkFiles []string
+
+	for offset := 0; offset < totalSec; {
+		chunkLen := maxChunkDurationSec
+		remaining := totalSec - offset
+		if remaining < maxChunkDurationSec {
+			// Round up to nearest 5 seconds
+			chunkLen = ((remaining + 4) / 5) * 5
+		}
+
+		seekTime := ftTime.Add(time.Duration(offset) * time.Second)
+		endTime := ftTime.Add(time.Duration(offset+chunkLen) * time.Second)
+
+		seek := seekTime.In(location).Format(datetimeLayout)
+		endAt := endTime.In(location).Format(datetimeLayout)
+
+		chunkFile := filepath.Join(tmpDir, fmt.Sprintf("chunk%04d.m4a", len(chunkFiles)))
+		chunkURL := info.ChunkURL(seek, endAt, chunkLen)
+
+		if err := DownloadHLSChunk(ctx, chunkURL, authToken, areaID, chunkFile); err != nil {
+			return nil, fmt.Errorf("failed to download chunk at offset %d: %w", offset, err)
+		}
+
+		chunkDuration, err := getAudioDuration(ctx, chunkFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get chunk duration: %w", err)
+		}
+
+		chunkFiles = append(chunkFiles, chunkFile)
+		offset += chunkDuration
+	}
+
+	return chunkFiles, nil
+}
+
+func getAudioDuration(ctx context.Context, filePath string) (int, error) {
+	cmdPath, err := exec.LookPath("ffprobe")
+	if err != nil {
+		return 0, err
+	}
+
+	cmd := exec.CommandContext(ctx, cmdPath,
+		"-v", "error",
+		"-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		filePath,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+
+	var duration float64
+	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%f", &duration); err != nil {
+		return 0, err
+	}
+
+	return int(duration + 0.5), nil
 }
 
 func (c *recCommand) Synopsis() string {

@@ -60,6 +60,32 @@ func (f *ffmpeg) stderrPipe() (io.ReadCloser, error) {
 	return f.StderrPipe()
 }
 
+// DownloadHLSChunk downloads an HLS chunk using ffmpeg.
+func DownloadHLSChunk(ctx context.Context, playlistURL, authToken, areaID, output string) error {
+	f, err := newFfmpeg(ctx)
+	if err != nil {
+		return err
+	}
+
+	headers := fmt.Sprintf("X-Radiko-Authtoken: %s\r\nX-Radiko-AreaId: %s\r\n", authToken, areaID)
+	f.setArgs(
+		"-nostdin",
+		"-loglevel", "error",
+		"-fflags", "+discardcorrupt",
+		"-headers", headers,
+		"-http_seekable", "0",
+		"-seekable", "0",
+	)
+	f.setInput(playlistURL)
+	f.setArgs(
+		"-acodec", "copy",
+		"-vn",
+		"-bsf:a", "aac_adtstoasc",
+		"-y",
+	)
+	return f.run(output)
+}
+
 // ConvertAACtoMP3 converts an aac file to a mp3 file.
 func ConvertAACtoMP3(ctx context.Context, input, output string) error {
 	f, err := newFfmpeg(ctx)
